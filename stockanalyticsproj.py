@@ -1,4 +1,3 @@
-
 import streamlit as st
 import requests
 import yfinance as yf
@@ -52,18 +51,16 @@ def safe_json_from_response(resp):
     text = resp.text or ""
     if not text.strip():
         return None, "Empty response body."
-    # try parse json
     try:
         return resp.json(), None
     except Exception:
-        # return a snippet for debugging
         sample = text[:400].replace('\n', ' ')
         return None, f"Invalid JSON. Response starts with: {sample!r}"
 
 
 @st.cache_data(ttl=3600)
 def find_ticker_by_name(name):
-    """Search Yahoo Finance for a ticker symbol matching `name`. Returns (symbol, message)."""
+    """Search Yahoo Finance for a ticker symbol matching name. Returns (symbol, message)."""
     try:
         url = "https://query2.finance.yahoo.com/v1/finance/search"
         resp = session.get(url, params={'q': name}, timeout=10)
@@ -77,7 +74,6 @@ def find_ticker_by_name(name):
             sym = q.get("symbol")
             if sym and sym.endswith(".NS"):
                 return sym, None
-        # fallback to first result symbol
         return quotes[0].get("symbol"), None
     except Exception as e:
         return None, str(e)
@@ -85,15 +81,11 @@ def find_ticker_by_name(name):
 
 @st.cache_data(ttl=300)
 def fetch_price_data_yf(ticker, period="6mo", interval="1d"):
-    """
-    Returns (df, message). df is a DataFrame indexed by timestamp with a 'price' column.
-    """
     try:
         t = yf.Ticker(ticker)
         hist = t.history(period=period, interval=interval, actions=False)
         if hist is None or hist.empty:
             return None, "No historical price data found for this ticker."
-        # Use 'Close' as price
         df = hist.rename(columns={'Close': 'price'})[['price']].copy()
         df.index = pd.to_datetime(df.index)
         df = df.sort_index()
@@ -106,26 +98,22 @@ def fetch_news_yf(ticker, max_articles=6):
     try:
         t = yf.Ticker(ticker)
         raw_news = getattr(t, "news", []) or []
+        if not raw_news:
+            return [], "No news found."
         news_list = []
         for n in raw_news[:max_articles]:
-            title = n.get('title', '')
-            link = n.get('link', '')
-            publisher = n.get('publisher') or n.get('publisher', '')
-            summary = n.get('summary') or ''
-            ts = n.get('providerPublishTime')
             news_list.append({
-                "title": title,
-                "link": link,
-                "summary": summary,
-                "publisher": publisher,
-                "time": ts
+                "title": n.get('title', ''),
+                "link": n.get('link', ''),
+                "summary": n.get('summary') or '',
+                "publisher": n.get('publisher') or '',
+                "time": n.get('providerPublishTime')
             })
         return news_list, None
     except Exception as e:
         return [], f"Error fetching news: {e}"
 
 def extract_text_from_url(url, max_chars=1000):
-    """Try to fetch the page and extract textual paragraphs (best-effort)."""
     try:
         resp = session.get(url, timeout=8)
         if resp.status_code != 200:
@@ -138,7 +126,6 @@ def extract_text_from_url(url, max_chars=1000):
         return ""
 
 def analyze_sentiment_text(text):
-    """Return (label, score) from VADER: label in {positive, neutral, negative} and compound score."""
     if not sia or not text:
         return "neutral", 0.0
     try:
@@ -183,7 +170,6 @@ def train_xgb_model(train_df, features, target='price'):
     model.fit(X, y)
     return model
 
-
 def plot_price(df, title="Price"):
     with _lock:
         fig, ax = plt.subplots(figsize=(10, 5))
@@ -206,26 +192,23 @@ def plot_sentiment_counts(sentiment_series):
         plt.tight_layout()
         return fig
 
-
 def main():
     st.sidebar.header("Configuration")
-    # Let user either type ticker or company name
     mode = st.sidebar.radio("Input mode", ["Ticker (recommended)", "Company Name (auto-search)"])
     ticker_input = ""
     company_input = ""
     if mode == "Ticker (recommended)":
-        ticker_input = st.sidebar.text_input("Enter ticker (e.g., TATAMOTORS.NS or AAPL)", value="TATAMOTORS.NS")
+        ticker_input = st.sidebar.text_input("Enter ticker", value="TATAMOTORS.NS")
     else:
-        company_input = st.sidebar.text_input("Enter company name (e.g., Tata Motors)", value="Tata Motors")
+        company_input = st.sidebar.text_input("Enter company name", value="Tata Motors")
     period = st.sidebar.selectbox("Period", ["1mo", "3mo", "6mo", "1y", "2y", "5y"], index=2)
     interval = st.sidebar.selectbox("Interval", ["1d", "1wk", "1mo"], index=0)
     enable_model = st.sidebar.checkbox("Train XGBoost model (requires >=100 points)", value=True)
-    max_news = st.sidebar.slider("Max news articles to fetch", 1, 10, 5)
+    max_articles = st.sidebar.slider("Max news articles to fetch", 1, 10, 5)  # <-- fixed scope here
     analyze_btn = st.sidebar.button("🔍 Analyze Stock")
 
     if analyze_btn:
-        with st.spinner("Searching and fetching data..."):
-            # Resolve ticker
+        with st.spinner("Fetching data..."):
             if mode.startswith("Ticker"):
                 ticker = ticker_input.strip()
                 if not ticker:
@@ -238,13 +221,11 @@ def main():
                     return
                 st.success(f"Resolved ticker: {ticker}")
 
-            # Fetch price data
             df, msg = fetch_price_data_yf(ticker, period=period, interval=interval)
             if df is None:
                 st.error(msg)
                 return
 
-            # Basic info
             st.header("📈 Stock Data Overview")
             st.write(f"**Ticker:** {ticker} — **Period:** {period} — **Interval:** {interval}")
             col1, col2, col3, col4 = st.columns(4)
@@ -253,35 +234,31 @@ def main():
             col3.metric("Price Change", f"₹{(df['price'].iloc[-1] - df['price'].iloc[-2]) if len(df)>1 else 0:.2f}")
             col4.metric("Volatility (std)", f"{df['price'].std():.2f}")
 
-            # Download button
             csv = df.reset_index().to_csv(index=False).encode('utf-8')
             st.download_button("Download CSV", csv, file_name=f"{ticker}_history.csv", mime="text/csv")
 
-            # Plot price
             st.subheader("Price Chart")
             fig_price = plot_price(df, title=f"{ticker} Price")
             st.pyplot(fig_price)
             plt.close(fig_price)
 
-            # Prepare features for model
             if enable_model:
                 if len(df) < 30:
-                    st.warning("Not enough points for reliable feature engineering/modeling. Try longer period or different interval.")
+                    st.warning("Not enough points for modeling.")
                 else:
                     proc = create_time_features(df)
                     proc = add_lag_features(proc)
                     proc = proc.dropna()
                     if len(proc) < 30:
-                        st.warning("After feature creation there are too few rows (NaNs removed).")
+                        st.warning("Too few rows after feature creation.")
                     else:
-                        # train/test split (80/20)
                         split_idx = int(len(proc) * 0.8)
                         train = proc.iloc[:split_idx]
                         test = proc.iloc[split_idx:]
                         FEATURES = ['second','minute','hour','day','weekday','lag1','lag2','lag3','rolling_mean_5','rolling_std_5','price_change']
                         FEATURES = [f for f in FEATURES if f in train.columns]
                         if len(FEATURES) < 5:
-                            st.warning("Insufficient features to train.")
+                            st.warning("Insufficient features.")
                         else:
                             try:
                                 model = train_xgb_model(train, FEATURES)
@@ -290,43 +267,34 @@ def main():
                                 st.subheader("Model Results")
                                 c1, c2 = st.columns(2)
                                 c1.metric("Test RMSE", f"{rmse:.2f}")
-                                # simple accuracy-like metric (not a true classification accuracy)
-                                c2.metric("Data used (train/test)", f"{len(train)}/{len(test)}")
-                                # Plot predictions vs actual
+                                c2.metric("Train/Test size", f"{len(train)}/{len(test)}")
                                 pred_df = test.copy()
                                 pred_df['pred'] = preds
                                 fig, ax = plt.subplots(figsize=(10,5))
-                                ax.plot(train.index, train['price'], label='Train', alpha=0.7)
+                                ax.plot(train.index, train['price'], label='Train')
                                 ax.plot(test.index, test['price'], label='Actual', color='orange')
                                 ax.plot(test.index, preds, label='Predicted', linestyle='--', color='red')
-                                ax.set_title("Model: Actual vs Predicted")
                                 ax.legend()
                                 plt.xticks(rotation=45)
                                 plt.tight_layout()
                                 st.pyplot(fig)
                                 plt.close(fig)
-                                # feature importance
-                                try:
-                                    fi = model.feature_importances_
-                                    fi_df = pd.DataFrame({"feature": FEATURES, "importance": fi}).sort_values("importance", ascending=False)
-                                    st.subheader("Feature Importance")
-                                    st.table(fi_df.reset_index(drop=True))
-                                except Exception:
-                                    pass
+                                fi = model.feature_importances_
+                                fi_df = pd.DataFrame({"feature": FEATURES, "importance": fi}).sort_values("importance", ascending=False)
+                                st.subheader("Feature Importance")
+                                st.table(fi_df.reset_index(drop=True))
                             except Exception as e:
                                 st.error(f"Model training failed: {e}")
 
-            # Sentiment
             st.header("📰 Sentiment Analysis (News Titles)")
             news_list, news_err = fetch_news_yf(ticker, max_articles)
             if news_err:
-                st.warning(f"News fetch warning: {news_err}")
+                st.warning(f"News fetch: {news_err}")
 
             if news_list:
                 news_rows = []
                 for n in news_list:
                     text = (n.get('title') or '') + " " + (n.get('summary') or '')
-                    # If summary is missing, attempt small scrape of the article (best effort)
                     if not n.get('summary') and n.get('link'):
                         snippet = extract_text_from_url(n['link'], max_chars=400)
                         text += " " + snippet
@@ -335,27 +303,24 @@ def main():
                         "title": n.get('title'),
                         "publisher": n.get('publisher'),
                         "sentiment": label,
-                        "score": float(score) if score is not None else 0.0,
+                        "score": float(score),
                         "link": n.get('link')
                     })
                 news_df = pd.DataFrame(news_rows)
-                # Display
                 for idx, row in news_df.iterrows():
                     with st.expander(f"{row['title']} — {row['publisher']}"):
                         st.write(f"**Sentiment:** {row['sentiment'].title()} (score {row['score']:.3f})")
                         if row['link']:
                             st.markdown(f"[Read article]({row['link']})")
-                # Summary metrics
                 st.subheader("Sentiment Summary")
-                mean_score = news_df['score'].mean() if not news_df.empty else 0.0
+                mean_score = news_df['score'].mean()
                 st.metric("Average sentiment score", f"{mean_score:.3f}")
                 fig_sent = plot_sentiment_counts(news_df['sentiment'])
                 st.pyplot(fig_sent)
                 plt.close(fig_sent)
             else:
-                st.info("No recent news found via yfinance for this ticker.")
+                st.info("No recent news found for this ticker.")
 
-            # Final cleanup
             gc.collect()
             st.success("✅ Analysis completed.")
 
